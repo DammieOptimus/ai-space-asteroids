@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bioluminescent Game of Life</title>
+    <style>
+        /* THE CANVAS PAINT */
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #020205; /* Pitch black space */
+            overflow: hidden;
+            touch-action: none; /* Prevents screen scrolling on mobile when drawing */
+        }
+        canvas {
+            display: block;
+        }
+        /* A subtle overlay to make it look cinematic */
+        #overlay {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: rgba(255, 255, 255, 0.5);
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 14px;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="overlay">Ecosystem: Evolving...<br>Click & Drag to Paint Life</div>
+    <canvas id="lifeCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('lifeCanvas');
+        const ctx = canvas.getContext('2d', { alpha: false }); // alpha: false speeds up drawing
+        const overlay = document.getElementById('overlay');
+
+        // --- GRID SETTINGS ---
+        const resolution = 7; // Size of each cell. Smaller = more microscopic!
+        let cols, rows;
+        let grid;
+        
+        // Auto-reboot tracking variables
+        let populationHistory = [];
+        let stagnationTimer = 0;
+
+        // Make the canvas fit the screen
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            cols = Math.floor(canvas.width / resolution);
+            rows = Math.floor(canvas.height / resolution);
+            initGrid();
+        }
+        window.addEventListener('resize', resize);
+
+        // --- CORE LOGIC ---
+
+        // Create an empty 2D array
+        function make2DArray(c, r) {
+            let arr = new Array(c);
+            for (let i = 0; i < arr.length; i++) {
+                arr[i] = new Array(r).fill(0);
+            }
+            return arr;
+        }
+
+        // The "Big Bang" - Fill the grid with random life
+        function initGrid() {
+            grid = make2DArray(cols, rows);
+            for (let i = 0; i < cols; i++) {
+                for (let j = 0; j < rows; j++) {
+                    // 15% chance for a cell to be alive at the start
+                    if (Math.random() < 0.15) {
+                        grid[i][j] = 1; // 1 represents age (newborn)
+                    }
+                }
+            }
+            populationHistory = [];
+            stagnationTimer = 0;
+            overlay.innerHTML = "Ecosystem: The Big Bang<br>Click & Drag to Paint Life";
+        }
+
+        // Count a cell's living neighbors
+        function countNeighbors(grid, x, y) {
+            let sum = 0;
+            // Check the 8 surrounding squares
+            for (let i = -1; i < 2; i++) {
+                for (let j = -1; j < 2; j++) {
+                    // Wrap around the screen edges (Toroidal grid)
+                    let col = (x + i + cols) % cols;
+                    let row = (y + j + rows) % rows;
+                    
+                    // If age > 0, it's alive
+                    if (grid[col][row] > 0) {
+                        sum += 1;
+                    }
+                }
+            }
+            // Subtract the cell itself (we only want neighbors)
+            if (grid[x][y] > 0) sum -= 1;
+            return sum;
+        }
+
+        // --- THE ANIMATION LOOP ---
+        function update() {
+            // Draw the fading ghostly trail background
+            ctx.fillStyle = "rgba(2, 2, 5, 0.15)"; // The '0.15' opacity creates the trail
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            let nextGrid = make2DArray(cols, rows);
+            let currentPopulation = 0;
+
+            // Loop through every single cell
+            for (let i = 0; i < cols; i++) {
+                for (let j = 0; j < rows; j++) {
+                    let state = grid[i][j];
+                    let neighbors = countNeighbors(grid, i, j);
+
+                    // CONWAY's RULES OF LIFE
+                    if (state === 0 && neighbors === 3) {
+                        nextGrid[i][j] = 1; // Reproduction: Newborn!
+                    } else if (state > 0 && (neighbors < 2 || neighbors > 3)) {
+                        nextGrid[i][j] = 0; // Death: Loneliness or Overpopulation
+                    } else if (state > 0) {
+                        nextGrid[i][j] = state + 1; // Survival: Cell gets older!
+                    }
+
+                    // DRAWING THE CELL
+                    let age = nextGrid[i][j];
+                    if (age > 0) {
+                        currentPopulation++;
+                        
+                        // Bioluminescent Color Math!
+                        // Starts at Hue 180 (Cyan), slowly shifts towards 300 (Neon Pink/Purple)
+                        let hue = Math.min(180 + (age * 3), 320); 
+                        
+                        ctx.fillStyle = `hsl(${hue}, 100%, 60%)`;
+                        
+                        // Draw a square, slightly smaller than resolution to create a cool grid effect
+                        ctx.fillRect(i * resolution, j * resolution, resolution - 1, resolution - 1);
+                    }
+                }
+            }
+
+            grid = nextGrid; // Swap the hidden grid to the live grid
+
+            // --- STAGNATION DETECTOR (The AI Brain) ---
+            // We keep track of the population. If it stays exactly the same for too long,
+            // or drops to zero, the universe is dead/stuck. Time for a Big Bang!
+            populationHistory.push(currentPopulation);
+            if (populationHistory.length > 60) {
+                populationHistory.shift(); // Keep only the last 60 frames (1 second)
+                
+                // Find highest and lowest population in the last second
+                let maxPop = Math.max(...populationHistory);
+                let minPop = Math.min(...populationHistory);
+
+                // If population barely changes, or is zero, start a timer
+                if (maxPop - minPop < 5 || currentPopulation === 0) {
+                    stagnationTimer++;
+                    overlay.innerHTML = `Ecosystem: Stagnant... Rebooting in ${100 - stagnationTimer}<br>Click & Drag to Paint Life`;
+                } else {
+                    stagnationTimer = 0;
+                    overlay.innerHTML = `Ecosystem: Thriving (Pop: ${currentPopulation})<br>Click & Drag to Paint Life`;
+                }
+
+                // Reboot!
+                if (stagnationTimer > 100) {
+                    initGrid();
+                }
+            }
+
+            requestAnimationFrame(update); // Loop endlessly
+        }
+
+        // --- INTERACTIVITY (The God Mode) ---
+        let isDrawing = false;
+
+        function paintLife(e) {
+            if (!isDrawing) return;
+            // Get mouse/touch coordinates
+            let x = e.clientX || e.touches[0].clientX;
+            let y = e.clientY || e.touches[0].clientY;
+            
+            // Convert exact pixels into grid coordinates
+            let col = Math.floor(x / resolution);
+            let row = Math.floor(y / resolution);
+
+            // Paint a 3x3 block of cells so it's easy to see
+            for(let i=-1; i<=1; i++) {
+                for(let j=-1; j<=1; j++) {
+                    let c = (col + i + cols) % cols;
+                    let r = (row + j + rows) % rows;
+                    grid[c][r] = 1; // Inject newborn cells!
+                }
+            }
+            // Reset stagnation timer if you interact
+            stagnationTimer = 0;
+        }
+
+        // Mouse Listeners
+        window.addEventListener('mousedown', (e) => { isDrawing = true; paintLife(e); });
+        window.addEventListener('mousemove', paintLife);
+        window.addEventListener('mouseup', () => { isDrawing = false; });
+
+        // Touch Listeners (For Phones)
+        window.addEventListener('touchstart', (e) => { isDrawing = true; paintLife(e); });
+        window.addEventListener('touchmove', paintLife);
+        window.addEventListener('touchend', () => { isDrawing = false; });
+
+        // IGNITE THE UNIVERSE
+        resize();
+        update();
+
+    </script>
+</body>
+</html>
