@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gravity Wars: Planetary Evolution</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #000005; /* Deep space black */
+            overflow: hidden;
+        }
+        canvas {
+            display: block;
+        }
+        #ui {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            color: rgba(255, 255, 255, 0.7);
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 14px;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui">Simulating Universe...<br>Planets: <span id="planetCount">0</span></div>
+    <canvas id="spaceCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('spaceCanvas');
+        const ctx = canvas.getContext('2d', { alpha: false });
+        const countDisplay = document.getElementById('planetCount');
+
+        let width, height;
+        let planets = [];
+
+        // Universal Gravity Constant (Tweak this to change the laws of physics!)
+        const G = 0.5; 
+
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            width = canvas.width;
+            height = canvas.height;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        class Planet {
+            constructor(x, y, mass, isSun = false) {
+                this.x = x;
+                this.y = y;
+                this.mass = mass;
+                this.isSun = isSun;
+                
+                // Calculate radius based on mass (Volume = 4/3 * pi * r^3)
+                this.radius = Math.pow(this.mass, 1/3) * 2; 
+
+                this.vx = 0;
+                this.vy = 0;
+                
+                if (this.isSun) {
+                    this.color = "#ffaa00"; // Glowing Orange
+                } else {
+                    // Pick a random neon color
+                    this.color = `hsl(${Math.random() * 360}, 100%, 60%)`;
+                }
+            }
+
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                
+                // Neon glow effect
+                ctx.shadowBlur = this.isSun ? 50 : 10;
+                ctx.shadowColor = this.color;
+                ctx.fillStyle = this.color;
+                
+                ctx.fill();
+                ctx.shadowBlur = 0; // Reset for performance
+            }
+        }
+
+        function createUniverse() {
+            planets = [];
+            
+            // 1. Create the Supermassive Central Sun
+            let sun = new Planet(width / 2, height / 2, 8000, true);
+            planets.push(sun);
+
+            // 2. Create the swarm of smaller planets
+            let numPlanets = 150;
+            for (let i = 0; i < numPlanets; i++) {
+                // Random position away from the center
+                let angle = Math.random() * Math.PI * 2;
+                let distance = (Math.random() * (Math.min(width, height) / 2)) + 50;
+                
+                let px = (width / 2) + Math.cos(angle) * distance;
+                let py = (height / 2) + Math.sin(angle) * distance;
+                
+                // Random mass between 5 and 30
+                let mass = (Math.random() * 25) + 5; 
+                let p = new Planet(px, py, mass);
+
+                // Give them a "kick" sideways so they orbit instead of falling straight in
+                // Perfect circular orbit velocity formula: v = sqrt(G * Mass_Sun / distance)
+                let orbitalVelocity = Math.sqrt((G * sun.mass) / distance);
+                
+                // Add a little randomness so orbits are chaotic and elliptical
+                let speedMod = (Math.random() * 0.4) + 0.8; 
+                
+                p.vx = Math.cos(angle + Math.PI / 2) * orbitalVelocity * speedMod;
+                p.vy = Math.sin(angle + Math.PI / 2) * orbitalVelocity * speedMod;
+
+                planets.push(p);
+            }
+        }
+
+        function updatePhysics() {
+            // Check every planet against every other planet
+            for (let i = 0; i < planets.length; i++) {
+                for (let j = i + 1; j < planets.length; j++) {
+                    let p1 = planets[i];
+                    let p2 = planets[j];
+
+                    let dx = p2.x - p1.x;
+                    let dy = p2.y - p1.y;
+                    let distSq = dx * dx + dy * dy;
+                    let dist = Math.sqrt(distSq);
+
+                    // --- COLLISION & MERGING ---
+                    if (dist < p1.radius + p2.radius) {
+                        // The bigger planet eats the smaller one
+                        let big = p1.mass > p2.mass ? p1 : p2;
+                        let small = p1.mass > p2.mass ? p2 : p1;
+
+                        // Conservation of Momentum: Combine their speeds based on weight
+                        let newMass = big.mass + small.mass;
+                        big.vx = (big.vx * big.mass + small.vx * small.mass) / newMass;
+                        big.vy = (big.vy * big.mass + small.vy * small.mass) / newMass;
+                        
+                        // Update mass and grow in size
+                        big.mass = newMass;
+                        big.radius = Math.pow(big.mass, 1/3) * 2;
+
+                        // Remove the small planet from the array
+                        planets = planets.filter(p => p !== small);
+                        
+                        // We modified the array, so break out of this inner loop to prevent errors
+                        break; 
+                    }
+
+                    // --- GRAVITY CALCULATION ---
+                    // Newton's Law: F = G * (m1 * m2) / r^2
+                    // We add +100 to distSq to prevent infinite gravity when they get extremely close
+                    let force = G * (p1.mass * p2.mass) / (distSq + 100); 
+
+                    // Break the force into X and Y directions
+                    let ax = (force * dx) / dist;
+                    let ay = (force * dy) / dist;
+
+                    // Acceleration = Force / Mass
+                    // Sun doesn't move easily because its mass is huge!
+                    p1.vx += ax / p1.mass;
+                    p1.vy += ay / p1.mass;
+                    p2.vx -= ax / p2.mass;
+                    p2.vy -= ay / p2.mass;
+                }
+            }
+
+            // Move the planets based on their new speeds
+            for (let p of planets) {
+                p.x += p.vx;
+                p.y += p.vy;
+
+                // Invisible "Dark Matter" walls holding the universe together
+                // If a planet flies way off screen, gently push it back towards the center
+                if (p.x < -1000 || p.x > width + 1000 || p.y < -1000 || p.y > height + 1000) {
+                     p.vx += (width/2 - p.x) * 0.00001;
+                     p.vy += (height/2 - p.y) * 0.00001;
+                }
+            }
+        }
+
+        function gameLoop() {
+            // Draw the fading background to create beautiful orbital trails
+            ctx.fillStyle = "rgba(0, 0, 5, 0.2)";
+            ctx.fillRect(0, 0, width, height);
+
+            updatePhysics();
+
+            for (let p of planets) {
+                p.draw();
+            }
+
+            // Update the UI text
+            countDisplay.innerText = planets.length;
+
+            // If everything merges into a single black hole, restart the universe!
+            if (planets.length <= 1) {
+                createUniverse();
+            }
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Start the Big Bang!
+        createUniverse();
+        gameLoop();
+    </script>
+</body>
+</html>

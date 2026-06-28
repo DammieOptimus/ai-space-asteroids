@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Evolutionary Battle Royale</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #1a0b2e; /* Synthwave dark purple */
+            overflow: hidden;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        canvas {
+            display: block;
+        }
+        #ui {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            color: #ff00ff;
+            text-shadow: 0 0 5px #ff00ff;
+            pointer-events: none;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 15px;
+            border-radius: 10px;
+            border: 1px solid #ff00ff;
+        }
+        .stat { color: #00ffff; text-shadow: 0 0 5px #00ffff; }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <h2>Genetic Evolution AI</h2>
+        Generation: <span class="stat" id="genDisplay">1</span><br>
+        Time Left: <span class="stat" id="timeDisplay">15.0</span>s<br>
+        Best Distance: <span class="stat" id="distDisplay">0</span>m
+    </div>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const genDisplay = document.getElementById('genDisplay');
+        const timeDisplay = document.getElementById('timeDisplay');
+        const distDisplay = document.getElementById('distDisplay');
+
+        let width, height;
+        let cameraX = 0;
+        let frameCount = 0;
+        const maxFrames = 900; // 15 seconds at 60fps
+        let generation = 1;
+        let cars = [];
+        let bestDistance = 0;
+
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            width = canvas.width;
+            height = canvas.height;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        // --- THE TERRAIN GENERATOR ---
+        // Uses simple sine waves to make infinite bumpy hills
+        function getTerrainY(x) {
+            let base = height * 0.7; // Ground level
+            let hill1 = Math.sin(x * 0.003) * 150; // Big mountains
+            let hill2 = Math.sin(x * 0.01) * 50;  // Medium bumps
+            let hill3 = Math.sin(x * 0.05) * 10;  // Small rocks
+            return base + hill1 + hill2 + hill3;
+        }
+
+        // --- THE PHYSICS ENGINE (Verlet Integration) ---
+        class Car {
+            constructor(dna) {
+                // DNA = [rearRadius, frontRadius, chassisLength, chassisHeight, topNodeOffset]
+                this.dna = dna;
+                this.color = `hsl(${Math.random() * 360}, 100%, 60%)`;
+                this.fitness = 0;
+                this.isLeader = false;
+
+                // Decode DNA to build the car
+                let r1 = dna[0], r2 = dna[1], w = dna[2], h = dna[3], offset = dna[4];
+
+                let startX = 0;
+                let startY = getTerrainY(startX) - 100;
+
+                // 3 Points (Nodes) of the car
+                this.p1 = { x: startX, y: startY, oldX: startX, oldY: startY, r: r1, isMotor: true }; // Rear wheel
+                this.p2 = { x: startX + w, y: startY, oldX: startX + w, oldY: startY, r: r2, isMotor: false }; // Front wheel
+                this.p3 = { x: startX + offset, y: startY - h, oldX: startX + offset, oldY: startY - h, r: 5, isMotor: false }; // Roof
+
+                this.points = [this.p1, this.p2, this.p3];
+
+                // 3 Sticks (Constraints) holding the car together
+                this.sticks = [
+                    { a: this.p1, b: this.p2, len: w },
+                    { a: this.p2, b: this.p3, len: Math.hypot(w - offset, h) },
+                    { a: this.p3, b: this.p1, len: Math.hypot(offset, h) }
+                ];
+            }
+
+            update() {
+                // 1. Gravity and Velocity
+                for (let p of this.points) {
+                    let vx = (p.x - p.oldX) * 0.99; // Air resistance
+                    let vy = (p.y - p.oldY) * 0.99;
+                    p.oldX = p.x;
+                    p.oldY = p.y;
+                    p.x += vx;
+                    p.y += vy + 0.6; // Gravity
+                }
+
+                // 2. Constraints (Resolve multiple times for stability)
+                for (let i = 0; i < 5; i++) {
+                    for (let stick of this.sticks) {
+                        let dx = stick.b.x - stick.a.x;
+                        let dy = stick.b.y - stick.a.y;
+                        let dist = Math.sqrt(dx * dx + dy * dy);
+                        let difference = (stick.len - dist) / dist;
+                        let offsetX = dx * difference * 0.5;
+                        let offsetY = dy * difference * 0.5;
+                        
+                        stick.a.x -= offsetX; stick.a.y -= offsetY;
+                        stick.b.x += offsetX; stick.b.y += offsetY;
+                    }
+
+                    // 3. Terrain Collision & Motor Force
+                    for (let p of this.points) {
+                        let groundY = getTerrainY(p.x);
+                        if (p.y + p.r > groundY) {
+                            p.y = groundY - p.r; // Push above ground
+                            
+                            if (p.isMotor) {
+                                // If rear wheel touches ground, the motor spins and pushes us forward!
+                                p.oldX -= 1.0; 
+                            } else {
+                                // Wheel friction (slow down if dragging)
+                                p.oldX = p.x - (p.x - p.oldX) * 0.8;
+                            }
+                        }
+                    }
+                }
+
+                // Update fitness (how far right it traveled)
+                this.fitness = this.p2.x;
+            }
+
+            draw() {
+                ctx.save();
+                ctx.translate(-cameraX, 0); // Move camera
+
+                ctx.strokeStyle = this.isLeader ? "#00ffff" : this.color;
+                ctx.lineWidth = this.isLeader ? 4 : 2;
+                ctx.globalAlpha = this.isLeader ? 1.0 : 0.3; // Dim losers
+
+                // Draw chassis sticks
+                ctx.beginPath();
+                ctx.moveTo(this.p1.x, this.p1.y);
+                ctx.lineTo(this.p2.x, this.p2.y);
+                ctx.lineTo(this.p3.x, this.p3.y);
+                ctx.closePath();
+                ctx.stroke();
+                if(this.isLeader) {
+                    ctx.fillStyle = "rgba(0, 255, 255, 0.2)";
+                    ctx.fill();
+                }
+
+                // Draw wheels
+                for (let p of [this.p1, this.p2]) {
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+                    ctx.stroke();
+                    // Draw a spoke so we can see it rolling
+                    ctx.moveTo(p.x, p.y);
+                    ctx.lineTo(p.x + Math.cos(p.x * 0.1) * p.r, p.y + Math.sin(p.x * 0.1) * p.r);
+                    ctx.stroke();
+                }
+
+                ctx.restore();
+            }
+        }
+
+        // --- GENETIC ALGORITHM ---
+        function randomDNA() {
+            return [
+                Math.random() * 30 + 10, // Rear wheel radius (10-40)
+                Math.random() * 30 + 10, // Front wheel radius (10-40)
+                Math.random() * 80 + 30, // Chassis Length (30-110)
+                Math.random() * 60 + 10, // Chassis Height (10-70)
+                Math.random() * 80       // Roof Offset (0-80)
+            ];
+        }
+
+        function breed(dnaA, dnaB) {
+            let newDNA = [];
+            for (let i = 0; i < 5; i++) {
+                // 1. Crossover (Take 50% from Mom, 50% from Dad)
+                newDNA[i] = Math.random() < 0.5 ? dnaA[i] : dnaB[i];
+                
+                // 2. Mutation (10% chance to slightly alter a gene)
+                if (Math.random() < 0.1) {
+                    newDNA[i] += (Math.random() - 0.5) * 15;
+                }
+            }
+            
+            // Prevent impossible negative numbers
+            newDNA[0] = Math.max(10, newDNA[0]);
+            newDNA[1] = Math.max(10, newDNA[1]);
+            newDNA[2] = Math.max(20, newDNA[2]);
+            return newDNA;
+        }
+
+        function nextGeneration() {
+            // Sort cars by who went the furthest
+            cars.sort((a, b) => b.fitness - a.fitness);
+            
+            // Save the top 3 best cars
+            let parents = [cars[0].dna, cars[1].dna, cars[2].dna];
+            
+            cars = [];
+            
+            // Keep the absolute winner unmodified (Elitism)
+            cars.push(new Car(parents[0]));
+
+            // Breed the rest of the 20 cars from the winners
+            for (let i = 0; i < 19; i++) {
+                let parentA = parents[Math.floor(Math.random() * parents.length)];
+                let parentB = parents[Math.floor(Math.random() * parents.length)];
+                cars.push(new Car(breed(parentA, parentB)));
+            }
+
+            generation++;
+            frameCount = 0;
+            cameraX = 0;
+        }
+
+        function init() {
+            cars = [];
+            for (let i = 0; i < 20; i++) {
+                cars.push(new Car(randomDNA()));
+            }
+        }
+
+        // --- ANIMATION LOOP ---
+        function drawTerrain() {
+            ctx.fillStyle = "#ff00ff"; // Neon Pink line
+            ctx.strokeStyle = "#ff00ff";
+            ctx.lineWidth = 3;
+            
+            ctx.beginPath();
+            // Start drawing slightly off-screen to the left to just past the right edge
+            for (let x = cameraX; x < cameraX + width + 50; x += 20) {
+                let y = getTerrainY(x);
+                if (x === cameraX) ctx.moveTo(x - cameraX, y);
+                else ctx.lineTo(x - cameraX, y);
+            }
+            ctx.stroke();
+
+            // Draw grid lines to make it look like a synthwave floor
+            ctx.lineWidth = 1;
+            ctx.globalAlpha = 0.2;
+            for (let x = Math.floor(cameraX / 100) * 100; x < cameraX + width; x += 100) {
+                ctx.beginPath();
+                ctx.moveTo(x - cameraX, getTerrainY(x));
+                ctx.lineTo(x - cameraX, height);
+                ctx.stroke();
+            }
+            ctx.globalAlpha = 1.0;
+        }
+
+        function gameLoop() {
+            ctx.clearRect(0, 0, width, height);
+
+            // Find the leader so the camera can follow them
+            let leader = cars[0];
+            for (let car of cars) {
+                car.isLeader = false;
+                if (car.fitness > leader.fitness) leader = car;
+            }
+            leader.isLeader = true;
+            
+            // Smoothly move camera towards the leader
+            cameraX += (leader.fitness - 200 - cameraX) * 0.1;
+            if (cameraX < 0) cameraX = 0;
+
+            drawTerrain();
+
+            // Update and draw cars
+            for (let car of cars) {
+                car.update();
+                car.draw();
+            }
+
+            // Update UI
+            frameCount++;
+            let timeLeft = ((maxFrames - frameCount) / 60).toFixed(1);
+            
+            genDisplay.innerText = generation;
+            timeDisplay.innerText = timeLeft;
+            distDisplay.innerText = Math.floor(leader.fitness / 10);
+
+            // Generation over? Breed the next batch!
+            if (frameCount >= maxFrames) {
+                nextGeneration();
+            }
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        init();
+        gameLoop();
+    </script>
+</body>
+</html>
