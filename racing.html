@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Arcade Racer</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #87CEEB; /* Sky blue */
+            overflow: hidden;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        canvas { display: block; }
+        
+        /* The UI Overlay */
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            text-shadow: 2px 2px 0 #000;
+            pointer-events: none;
+            background: rgba(0, 0, 0, 0.4);
+            padding: 20px;
+            border-radius: 10px;
+            border: 3px solid white;
+        }
+        h1 { margin: 0 0 10px 0; font-size: 24px; color: #ffeb3b; }
+        .stat { font-size: 20px; margin-bottom: 5px; }
+        .highlight { color: #00ffcc; font-weight: bold; }
+        #instructions {
+            position: absolute;
+            bottom: 20px;
+            width: 100%;
+            text-align: center;
+            color: white;
+            font-size: 18px;
+            text-shadow: 1px 1px 0 #000;
+            pointer-events: none;
+        }
+    </style>
+    <!-- Bring in the Three.js 3D Engine from the web -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <div id="ui">
+        <h1>NEON CIRCUIT</h1>
+        <div class="stat">Speed: <span id="speedDisplay" class="highlight">0</span> km/h</div>
+        <div class="stat">Current Lap: <span id="timeDisplay" class="highlight">00:00:00</span></div>
+        <div class="stat">Best Lap: <span id="bestDisplay" class="highlight">--:--:--</span></div>
+    </div>
+    <div id="instructions">Use WASD or Arrow Keys to Drive</div>
+
+    <script>
+        // --- 1. SETUP THE 3D UNIVERSE ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#87CEEB'); // Sky color
+        // Add some fog so the world fades beautifully into the distance
+        scene.fog = new THREE.FogExp2('#87CEEB', 0.002);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
+        
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true; // Turn on shadows!
+        document.body.appendChild(renderer.domElement);
+
+        // --- 2. LIGHTING (The Sun) ---
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(100, 200, 50);
+        dirLight.castShadow = true;
+        // Increase shadow quality
+        dirLight.shadow.mapSize.width = 2048;
+        dirLight.shadow.mapSize.height = 2048;
+        dirLight.shadow.camera.left = -500;
+        dirLight.shadow.camera.right = 500;
+        dirLight.shadow.camera.top = 500;
+        dirLight.shadow.camera.bottom = -500;
+        scene.add(dirLight);
+
+        // --- 3. PROCEDURALLY GENERATE THE TRACK ---
+        // We draw the track on an invisible 2D canvas, then use it as a 3D texture
+        const trackSize = 2048;
+        const ctxCanvas = document.createElement('canvas');
+        ctxCanvas.width = trackSize;
+        ctxCanvas.height = trackSize;
+        const ctx = ctxCanvas.getContext('2d', { willReadFrequently: true });
+
+        // Paint the Grass
+        ctx.fillStyle = '#3a7d44';
+        ctx.fillRect(0, 0, trackSize, trackSize);
+
+        // Paint the Asphalt Road
+        ctx.lineWidth = 160;
+        ctx.strokeStyle = '#555555'; // Dark grey
+        ctx.lineJoin = 'round'; // Makes corners perfectly curved!
+        ctx.lineCap = 'round';
+        
+        ctx.beginPath();
+        // A complex, winding track layout
+        ctx.moveTo(400, 400); // Start line
+        ctx.lineTo(1600, 400); // Straightaway
+        ctx.lineTo(1600, 1600); // Sharp turn
+        ctx.lineTo(1000, 1600); // Chicane
+        ctx.lineTo(1000, 1000);
+        ctx.lineTo(400, 1000); // Back stretch
+        ctx.closePath();
+        ctx.stroke();
+
+        // Paint Start/Finish Checkerboard Line at (400, 400)
+        ctx.fillStyle = 'white';
+        for(let i=0; i<160; i+=20) {
+            for(let j=0; j<40; j+=20) {
+                if((i/20 + j/20) % 2 === 0) {
+                    ctx.fillRect(400 - 20 + j, 400 - 80 + i, 20, 20);
+                }
+            }
+        }
+
+        // Save a mathematical map of the pixels so the physics engine knows where the grass is
+        const trackData = ctx.getImageData(0, 0, trackSize, trackSize).data;
+
+        // Turn the drawing into a 3D Floor
+        const groundTexture = new THREE.CanvasTexture(ctxCanvas);
+        const groundGeo = new THREE.PlaneGeometry(2000, 2000);
+        // We use MeshStandardMaterial so it reacts to the sun and shadows
+        const groundMat = new THREE.MeshStandardMaterial({ map: groundTexture, roughness: 0.8 });
+        const ground = new THREE.Mesh(groundGeo, groundMat);
+        ground.rotation.x = -Math.PI / 2; // Lay it flat on the floor
+        ground.receiveShadow = true;
+        scene.add(ground);
+
+        // --- 4. SCATTER 3D TREES ---
+        // Let's add trees, but make sure they only grow on the grass!
+        const treeGeo = new THREE.ConeGeometry(8, 20, 5);
+        const trunkGeo = new THREE.CylinderGeometry(2, 2, 10);
+        const treeMat = new THREE.MeshStandardMaterial({ color: '#2d5a27' });
+        const trunkMat = new THREE.MeshStandardMaterial({ color: '#5c4033' });
+
+        for (let i = 0; i < 150; i++) {
+            // Pick a random spot
+            let px = Math.floor(Math.random() * trackSize);
+            let py = Math.floor(Math.random() * trackSize);
+            
+            // Check the color of the invisible map. If it's pure grass green, plant a tree!
+            let index = (py * trackSize + px) * 4;
+            if (trackData[index] < 100 && trackData[index+1] > 100) { // Green is high, Red is low
+                let treeGroup = new THREE.Group();
+                
+                let leaves = new THREE.Mesh(treeGeo, treeMat);
+                leaves.position.y = 15;
+                leaves.castShadow = true;
+                
+                let trunk = new THREE.Mesh(trunkGeo, trunkMat);
+                trunk.position.y = 5;
+                trunk.castShadow = true;
+
+                treeGroup.add(leaves);
+                treeGroup.add(trunk);
+                
+                // Convert 2D map coordinates to 3D world coordinates
+                treeGroup.position.set(px - 1024, 0, py - 1024);
+                scene.add(treeGroup);
+            }
+        }
+
+        // --- 5. SCULPT THE SPORTS CAR ---
+        const car = new THREE.Group();
+
+        // Chassis (Red)
+        const chassisGeo = new THREE.BoxGeometry(10, 4, 20);
+        const chassisMat = new THREE.MeshStandardMaterial({ color: 0xff0000 });
+        const chassis = new THREE.Mesh(chassisGeo, chassisMat);
+        chassis.position.y = 3;
+        chassis.castShadow = true;
+        car.add(chassis);
+
+        // Cabin (Dark Glass)
+        const cabinGeo = new THREE.BoxGeometry(8, 4, 10);
+        const cabinMat = new THREE.MeshStandardMaterial({ color: 0x222222 });
+        const cabin = new THREE.Mesh(cabinGeo, cabinMat);
+        cabin.position.set(0, 6, -2);
+        cabin.castShadow = true;
+        car.add(cabin);
+
+        // Spoiler (Yellow)
+        const spoilerGeo = new THREE.BoxGeometry(12, 1, 3);
+        const spoilerMat = new THREE.MeshStandardMaterial({ color: 0xffcc00 });
+        const spoiler = new THREE.Mesh(spoilerGeo, spoilerMat);
+        spoiler.position.set(0, 6, 8);
+        spoiler.castShadow = true;
+        car.add(spoiler);
+        
+        // Spoiler supports
+        const supportGeo = new THREE.BoxGeometry(1, 2, 1);
+        const leftSupport = new THREE.Mesh(supportGeo, cabinMat);
+        leftSupport.position.set(-4, 4.5, 8);
+        const rightSupport = new THREE.Mesh(supportGeo, cabinMat);
+        rightSupport.position.set(4, 4.5, 8);
+        car.add(leftSupport);
+        car.add(rightSupport);
+
+        // Wheels (Black)
+        const wheelGeo = new THREE.CylinderGeometry(2.5, 2.5, 2, 12);
+        wheelGeo.rotateZ(Math.PI / 2); // Turn them sideways like wheels
+        const wheelMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+        
+        const wheelPositions = [
+            [-5.5, 2.5, 6],  // Back Left
+            [5.5, 2.5, 6],   // Back Right
+            [-5.5, 2.5, -6], // Front Left
+            [5.5, 2.5, -6]   // Front Right
+        ];
+        
+        for (let pos of wheelPositions) {
+            let wheel = new THREE.Mesh(wheelGeo, wheelMat);
+            wheel.position.set(pos[0], pos[1], pos[2]);
+            wheel.castShadow = true;
+            car.add(wheel);
+        }
+
+        scene.add(car);
+
+        // Move car to starting line (maps to 400,400 on our 2D canvas)
+        car.position.set(400 - 1024, 0, 400 - 1024);
+        car.rotation.y = -Math.PI / 2; // Face down the straightaway
+
+        // --- 6. PHYSICS & CONTROLS ---
+        const keys = {};
+        window.addEventListener('keydown', (e) => keys[e.key.toLowerCase()] = true);
+        window.addEventListener('keyup', (e) => keys[e.key.toLowerCase()] = false);
+
+        let speed = 0;
+        let maxSpeed = 3.5; // Top speed
+        let acceleration = 0.08;
+        let turnSpeed = 0.04;
+
+        // UI Elements
+        const uiSpeed = document.getElementById('speedDisplay');
+        const uiTime = document.getElementById('timeDisplay');
+        const uiBest = document.getElementById('bestDisplay');
+
+        // Lap Logic Variables
+        let lapStartTime = Date.now();
+        let bestLapTime = Infinity;
+        let passedCheckpoint = false; // Prevents cheating by driving backwards
+
+        function formatTime(ms) {
+            let minutes = Math.floor(ms / 60000);
+            let seconds = Math.floor((ms % 60000) / 1000);
+            let milli = Math.floor((ms % 1000) / 10);
+            return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}:${milli.toString().padStart(2, '0')}`;
+        }
+
+        // Window resize handler
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // --- 7. THE MAIN GAME LOOP ---
+        function gameLoop() {
+            requestAnimationFrame(gameLoop);
+
+            // --- A. Driving Physics ---
+            let isAccelerating = false;
+            if (keys['w'] || keys['arrowup']) { speed += acceleration; isAccelerating = true; }
+            if (keys['s'] || keys['arrowdown']) { speed -= acceleration; isAccelerating = true; }
+
+            // Determine if car is on grass or road using our secret invisible map!
+            // Convert 3D world coordinates back to 2D canvas coordinates
+            let mapX = Math.floor(car.position.x + 1024);
+            let mapZ = Math.floor(car.position.z + 1024);
+            let friction = 0.96; // Standard road friction
+
+            if (mapX >= 0 && mapX < trackSize && mapZ >= 0 && mapZ < trackSize) {
+                let index = (mapZ * trackSize + mapX) * 4;
+                // If it's mostly green and very little red/grey, we hit the grass!
+                if (trackData[index+1] > 100 && trackData[index] < 100) {
+                    friction = 0.85; // Heavy grass friction (slows you down)
+                    maxSpeed = 1.5;  // Limit top speed in dirt
+                } else {
+                    maxSpeed = 3.5;  // Normal road speed
+                }
+            }
+
+            // Apply friction (slows car down automatically when you let off the gas)
+            if (!isAccelerating) speed *= friction; 
+            
+            // Limit speed
+            if (speed > maxSpeed) speed = maxSpeed;
+            if (speed < -maxSpeed/2) speed = -maxSpeed/2; // Reverse is slower
+
+            // --- B. Steering ---
+            // Only allow steering if the car is actually moving
+            if (Math.abs(speed) > 0.1) {
+                // If moving backwards, steering reverses
+                let dir = speed > 0 ? 1 : -1; 
+                if (keys['a'] || keys['arrowleft']) car.rotation.y += turnSpeed * dir;
+                if (keys['d'] || keys['arrowright']) car.rotation.y -= turnSpeed * dir;
+            }
+
+            // Move the car Forward! (Three.js makes this easy with translateZ)
+            // Note: Our car mesh faces -Z, so negative speed moves the nose forward
+            car.translateZ(-speed);
+
+            // Keep car strictly inside the 2000x2000 world boundaries
+            if (car.position.x > 980) car.position.x = 980;
+            if (car.position.x < -980) car.position.x = -980;
+            if (car.position.z > 980) car.position.z = 980;
+            if (car.position.z < -980) car.position.z = -980;
+
+            // --- C. Chase Camera Logic ---
+            // Calculate a position slightly behind and above the car
+            let relativeCameraOffset = new THREE.Vector3(0, 15, 35);
+            // Convert that relative position into a world position based on the car's rotation
+            let cameraOffset = relativeCameraOffset.applyMatrix4(car.matrixWorld);
+            // Smoothly glide the camera to that spot (0.1 is the smoothness factor)
+            camera.position.lerp(cameraOffset, 0.1);
+            // Tell the camera to always look exactly at the car
+            camera.lookAt(car.position);
+
+            // --- D. Lap Timer Logic ---
+            let currentTime = Date.now() - lapStartTime;
+            uiTime.innerText = formatTime(currentTime);
+            // 1 unit of speed is roughly 60km/h scale visually
+            uiSpeed.innerText = Math.floor(Math.abs(speed * 60)); 
+
+            // Checkpoint (Opposite side of track, near X:1600, Z:1600 -> Map to 576, 576 in 3D)
+            let distToCheckpoint = Math.sqrt(Math.pow(car.position.x - 576, 2) + Math.pow(car.position.z - 576, 2));
+            if (distToCheckpoint < 200) passedCheckpoint = true;
+
+            // Finish Line (X: 400, Z: 400 -> Map to -624, -624 in 3D)
+            let distToStart = Math.sqrt(Math.pow(car.position.x - (-624), 2) + Math.pow(car.position.z - (-624), 2));
+            // Only counts if you hit the checkpoint first!
+            if (distToStart < 80 && passedCheckpoint) {
+                if (currentTime < bestLapTime) {
+                    bestLapTime = currentTime;
+                    uiBest.innerText = formatTime(bestLapTime);
+                }
+                lapStartTime = Date.now(); // Reset clock
+                passedCheckpoint = false; // Reset checkpoint
+            }
+
+            // Render the 3D scene
+            renderer.render(scene, camera);
+        }
+
+        // Start the engine!
+        gameLoop();
+    </script>
+</body>
+</html>
